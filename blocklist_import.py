@@ -1891,16 +1891,12 @@ class CrowdSecLAPI:
 
         # Get machine authentication headers (required for /alerts endpoint)
         if self.tls_enabled:
-            # mTLS session already configured; no headers needed
-            headers = None
-        else:
-            headers = self._get_machine_headers()
-        if not headers:
-            self.logger.error(
-                "Machine credentials required for writing decisions. "
-                "Set CROWDSEC_MACHINE_ID and CROWDSEC_MACHINE_PASSWORD or CROWDSEC_MACHINE_PASSWORD_FILE"
-            )
-            return 0, len(ips)
+              headers = None
+          else:
+              headers = self._get_machine_headers()
+              if not headers:  # <-- MOVED HERE
+                  self.logger.error(...)
+                  return 0, len(ips)
 
         try:
             response = self.session.post(
