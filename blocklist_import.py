@@ -1892,11 +1892,11 @@ class CrowdSecLAPI:
         # Get machine authentication headers (required for /alerts endpoint)
         if self.tls_enabled:
               headers = None
-          else:
-              headers = self._get_machine_headers()
-              if not headers:  # <-- MOVED HERE
-                  self.logger.error(...)
-                  return 0, len(ips)
+        else:
+            headers = self._get_machine_headers()
+            if not headers:  # <-- MOVED HERE
+                self.logger.error(...)
+                return 0, len(ips)
 
         try:
             response = self.session.post(
