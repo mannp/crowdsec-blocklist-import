@@ -1782,12 +1782,17 @@ class CrowdSecLAPI:
                 self.logger.error("Forbidden: check your LAPI_API_KEY")
                 self.logger.error(f"Response: {response}")
             elif response.status_code == 403:
-                # Machine JWT failed — fall back to bouncer auth
-                self.logger.warning(
-                    "Machine JWT rejected for decision query, "
-                    "falling back to bouncer API key"
-                )
-                return self._get_existing_ips_via_bouncer()
+                if self.tls_enabled:
+                    # mTLS auth failed - don't fall back, log error and return
+                    self.logger.error("mTLS authentication failed for decision query")
+                    self.logger.error(f"Response: {response}")
+                else:
+                    # Machine JWT failed — fall back to bouncer auth
+                    self.logger.warning(
+                        "Machine JWT rejected for decision query, "
+                        "falling back to bouncer API key"
+                    )
+                    return self._get_existing_ips_via_bouncer()
             else:
                 self.logger.error(f"Error calling {self.base_url}/v1/decisions")
                 self.logger.error(f"Response: {response}")
