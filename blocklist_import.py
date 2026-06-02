@@ -1890,7 +1890,11 @@ class CrowdSecLAPI:
         }
 
         # Get machine authentication headers (required for /alerts endpoint)
-        headers = self._get_machine_headers()
+        if self.tls_enabled:
+            # mTLS session already configured; no headers needed
+            headers = None
+        else:
+            headers = self._get_machine_headers()
         if not headers:
             self.logger.error(
                 "Machine credentials required for writing decisions. "
