@@ -1670,6 +1670,10 @@ class CrowdSecLAPI:
         }
         if not self.tls_enabled:
             self.bouncer_headers["X-Api-Key"] = api_key
+            if self.machine_id and self.machine_password:
+                self.logger.debug("Authenticating to LAPI via machine credentials (JWT)")
+            else:
+                self.logger.debug("Authenticating to LAPI via bouncer API key")
 
     def _get_machine_token(self) -> Optional[str]:
         """Get JWT token for machine authentication."""
