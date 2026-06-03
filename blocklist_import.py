@@ -463,8 +463,8 @@ class Config:
     lapi_key: str = ""  # Bouncer API key (for reading decisions)
     lapi_key_file: str = ""  # Bouncer API key file (for reading decisions)
     lapi_ca_cert_path: str = ""  # CA certificate path for LAPI TLS verification
-    lapi_cert_path: str = ""  # Client certificate path for LAPI mTLS authentication
-    lapi_key_path: str = ""  # Client private key path for LAPI mTLS authentication
+    lapi_agent_cert_path: str = ""  # Agent client certificate path for LAPI mTLS JWT auth
+    lapi_agent_key_path: str = ""  # Agent client private key path for LAPI mTLS JWT auth
 
     # Bouncer client certificate (for reading decisions via GET /v1/decisions)
     # Uses a separate OU (bouncer-ou) vs the agent cert used for writes
@@ -571,8 +571,8 @@ class Config:
             lapi_key=os.getenv("CROWDSEC_LAPI_KEY", ""),
             lapi_key_file=os.getenv("CROWDSEC_LAPI_KEY_FILE", ""),
             lapi_ca_cert_path=os.getenv("CROWDSEC_LAPI_CA_CERT_PATH", ""),
-            lapi_cert_path=os.getenv("CROWDSEC_LAPI_CERT_PATH", ""),
-            lapi_key_path=os.getenv("CROWDSEC_LAPI_KEY_PATH", ""),
+            lapi_agent_cert_path=os.getenv("CROWDSEC_LAPI_AGENT_CERT_PATH", ""),
+            lapi_agent_key_path=os.getenv("CROWDSEC_LAPI_AGENT_KEY_PATH", ""),
             lapi_bouncer_cert_path=os.getenv("CROWDSEC_LAPI_BOUNCER_CERT_PATH", ""),
             lapi_bouncer_key_path=os.getenv("CROWDSEC_LAPI_BOUNCER_KEY_PATH", ""),
             machine_id=os.getenv("CROWDSEC_MACHINE_ID", ""),
@@ -1424,7 +1424,7 @@ def validate_lapi_tls_paths(
 
     if bool(cert_path) != bool(key_path):
         errors.append(
-            "CROWDSEC_LAPI_CERT_PATH and CROWDSEC_LAPI_KEY_PATH must both "
+            f"{prefix}_CERT_PATH and {prefix}_KEY_PATH must both "
             "be set for LAPI TLS authentication"
         )
 
@@ -1644,8 +1644,8 @@ class CrowdSecLAPI:
         machine_password: str,
         logger: logging.Logger,
         ca_cert_path: str = "",
-        cert_path: str = "",
-        key_path: str = "",
+        agent_cert_path: str = "",
+        agent_key_path: str = "",
         bouncer_cert_path: str = "",
         bouncer_key_path: str = "",
     ):
@@ -1654,11 +1654,11 @@ class CrowdSecLAPI:
         self.machine_id = machine_id
         self.machine_password = machine_password
         self.ca_cert_path = ca_cert_path
-        self.cert_path = cert_path
-        self.key_path = key_path
+        self.agent_cert_path = agent_cert_path
+        self.agent_key_path = agent_key_path
         self.bouncer_cert_path = bouncer_cert_path
         self.bouncer_key_path = bouncer_key_path
-        self.tls_enabled = bool(cert_path and key_path)
+        self.tls_enabled = bool(agent_cert_path and agent_key_path)
         self.bouncer_tls_enabled = bool(bouncer_cert_path and bouncer_key_path)
         self.session = create_http_session(10)
         self.logger = logger
@@ -1668,7 +1668,7 @@ class CrowdSecLAPI:
         if ca_cert_path:
             self.session.verify = ca_cert_path
         if self.tls_enabled:
-            self.session.cert = (cert_path, key_path)
+            self.session.cert = (agent_cert_path, agent_key_path)
             self.logger.debug("Configured LAPI agent certificate authentication")
             if not base_url.startswith("https://"):
                 self.logger.warning(
@@ -1938,7 +1938,7 @@ class CrowdSecLAPI:
         if not headers:
             self.logger.error(
                 "Cannot write decisions: no JWT token available. "
-                "Set CROWDSEC_LAPI_CERT_PATH + CROWDSEC_LAPI_KEY_PATH (agent cert) "
+                "Set CROWDSEC_LAPI_AGENT_CERT_PATH + CROWDSEC_LAPI_AGENT_KEY_PATH (agent cert) "
                 "or CROWDSEC_MACHINE_ID + CROWDSEC_MACHINE_PASSWORD."
             )
             return 0, len(ips)
@@ -2048,8 +2048,9 @@ def run_import(config: Config, logger: logging.Logger) -> ImportStats:
 
     tls_errors = validate_lapi_tls_paths(
         config.lapi_ca_cert_path,
-        config.lapi_cert_path,
-        config.lapi_key_path,
+        config.lapi_agent_cert_path,
+        config.lapi_agent_key_path,
+        prefix="CROWDSEC_LAPI_AGENT",
     )
     if tls_errors:
         for error in tls_errors:
@@ -2075,8 +2076,8 @@ def run_import(config: Config, logger: logging.Logger) -> ImportStats:
         machine_password=machine_password,
         logger=logger,
         ca_cert_path=config.lapi_ca_cert_path,
-        cert_path=config.lapi_cert_path,
-        key_path=config.lapi_key_path,
+        agent_cert_path=config.lapi_agent_cert_path,
+        agent_key_path=config.lapi_agent_key_path,
         bouncer_cert_path=config.lapi_bouncer_cert_path,
         bouncer_key_path=config.lapi_bouncer_key_path,
     )
@@ -2093,8 +2094,8 @@ def run_import(config: Config, logger: logging.Logger) -> ImportStats:
                 "Authentication required. Set either:\n"
                 "  - CROWDSEC_LAPI_KEY or CROWDSEC_LAPI_KEY_FILE (bouncer key for read-only)\n"
                 "  - CROWDSEC_MACHINE_ID + CROWDSEC_MACHINE_PASSWORD or CROWDSEC_MACHINE_PASSWORD_FILE (for full access)\n"
-                "  - CROWDSEC_LAPI_CERT_PATH + CROWDSEC_LAPI_KEY_PATH "
-                "(client certificate auth)"
+                "  - CROWDSEC_LAPI_AGENT_CERT_PATH + CROWDSEC_LAPI_AGENT_KEY_PATH "
+                "(agent client cert for JWT auth)"
             )
             return stats
 
@@ -2103,8 +2104,8 @@ def run_import(config: Config, logger: logging.Logger) -> ImportStats:
             logger.error(
                 "Machine credentials required for writing decisions.\n"
                 "Set CROWDSEC_MACHINE_ID and CROWDSEC_MACHINE_PASSWORD or CROWDSEC_MACHINE_PASSWORD_FILE,\n"
-                "or set CROWDSEC_LAPI_CERT_PATH and CROWDSEC_LAPI_KEY_PATH "
-                "for client certificate auth.\n"
+                "or set CROWDSEC_LAPI_AGENT_CERT_PATH and CROWDSEC_LAPI_AGENT_KEY_PATH "
+                "for agent client certificate JWT auth.\n"
                 "Get these from: cscli machines list (or register a new machine)"
             )
             return stats
@@ -2542,8 +2543,10 @@ Environment Variables:
   CROWDSEC_LAPI_URL        CrowdSec LAPI URL (default: http://localhost:8080)
   CROWDSEC_LAPI_KEY[_FILE] CrowdSec LAPI key / key file (required)
   CROWDSEC_LAPI_CA_CERT_PATH  Optional trust bundle for LAPI HTTPS verification
-  CROWDSEC_LAPI_CERT_PATH     Optional client certificate for LAPI mTLS auth
-  CROWDSEC_LAPI_KEY_PATH      Optional client private key for LAPI mTLS auth
+  CROWDSEC_LAPI_AGENT_CERT_PATH   Agent client cert for JWT write auth (OU=agent-ou)
+  CROWDSEC_LAPI_AGENT_KEY_PATH    Agent client key for JWT write auth
+  CROWDSEC_LAPI_BOUNCER_CERT_PATH Bouncer client cert for decision reads (OU=bouncer-ou)
+  CROWDSEC_LAPI_BOUNCER_KEY_PATH  Bouncer client key for decision reads
   DECISION_DURATION        How long decisions last (default: 24h)
   BATCH_SIZE               IPs per batch (default: 1000)
   LOG_LEVEL                DEBUG, INFO, WARN, ERROR (default: INFO)
