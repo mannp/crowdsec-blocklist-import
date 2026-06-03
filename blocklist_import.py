@@ -1431,6 +1431,14 @@ def validate_lapi_tls_paths(
             continue
         if not os.access(path, os.R_OK):
             errors.append(f"{env_name} is not readable: {path}")
+            continue
+        if env_name == "CROWDSEC_LAPI_KEY_PATH":
+            mode = os.stat(path).st_mode & 0o777
+            if mode & 0o077:
+                errors.append(
+                    f"{env_name} permissions are {oct(mode)[2:]}, should be 600 or 400 "
+                    "(private key must not be accessible by group/other)"
+                )
 
     return errors
 
