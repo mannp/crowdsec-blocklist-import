@@ -1681,7 +1681,7 @@ class CrowdSecLAPI:
         if self.jwt_token and self.jwt_expires and time.time() < self.jwt_expires - 60:
             return self.jwt_token
 
-        if not self.tls_enabled and (not self.machine_id or not self.machine_password):
+        if not self.machine_id or not self.machine_password:
             return None
 
         try:
@@ -1756,7 +1756,7 @@ class CrowdSecLAPI:
 
     def can_write(self) -> bool:
         """Check if we have credentials for write operations."""
-        return self.tls_enabled or bool(self.machine_id and self.machine_password)
+        return bool(self.machine_id and self.machine_password)
 
     def get_existing_ips(self) -> list[tuple[str, timedelta]]:
         """
@@ -1772,11 +1772,7 @@ class CrowdSecLAPI:
             # Prefer machine JWT auth — returns the full decision set
             # (bouncer API returns a stream delta after the first pull,
             #  causing subsequent runs to see 0 decisions and reimport everything)
-            if self.tls_enabled:
-                # mTLS session already configured with certs; no headers needed
-                headers = None
-            else:
-                headers = self._get_machine_headers() or self.bouncer_headers  
+            headers = self._get_machine_headers() or self.bouncer_headers
 
             response = self.session.get(
                 f"{self.base_url}/v1/decisions",
@@ -1798,17 +1794,12 @@ class CrowdSecLAPI:
                 self.logger.error("Forbidden: check your LAPI_API_KEY")
                 self.logger.error(f"Response: {response}")
             elif response.status_code == 403:
-                if self.tls_enabled:
-                    # mTLS auth failed - don't fall back, log error and return
-                    self.logger.error("mTLS authentication failed for decision query")
-                    self.logger.error(f"Response: {response}")
-                else:
-                    # Machine JWT failed — fall back to bouncer auth
-                    self.logger.warning(
-                        "Machine JWT rejected for decision query, "
-                        "falling back to bouncer API key"
-                    )
-                    return self._get_existing_ips_via_bouncer()
+                # Machine JWT failed — fall back to bouncer auth
+                self.logger.warning(
+                    "Machine JWT rejected for decision query, "
+                    "falling back to bouncer API key"
+                )
+                return self._get_existing_ips_via_bouncer()
             else:
                 self.logger.error(f"Error calling {self.base_url}/v1/decisions")
                 self.logger.error(f"Response: {response}")
@@ -1906,13 +1897,13 @@ class CrowdSecLAPI:
         }
 
         # Get machine authentication headers (required for /alerts endpoint)
-        if self.tls_enabled:
-              headers = None
-        else:
-            headers = self._get_machine_headers()
-            if not headers:  # <-- MOVED HERE
-                self.logger.error(...)
-                return 0, len(ips)
+        headers = self._get_machine_headers()
+        if not headers:
+            self.logger.error(
+                "Machine credentials required for writing decisions. "
+                "Set CROWDSEC_MACHINE_ID and CROWDSEC_MACHINE_PASSWORD or CROWDSEC_MACHINE_PASSWORD_FILE"
+            )
+            return 0, len(ips)
 
         try:
             response = self.session.post(
