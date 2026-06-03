@@ -466,6 +466,11 @@ class Config:
     lapi_cert_path: str = ""  # Client certificate path for LAPI mTLS authentication
     lapi_key_path: str = ""  # Client private key path for LAPI mTLS authentication
 
+    # Bouncer client certificate (for reading decisions via GET /v1/decisions)
+    # Uses a separate OU (bouncer-ou) vs the agent cert used for writes
+    lapi_bouncer_cert_path: str = ""
+    lapi_bouncer_key_path: str = ""
+
     # Machine credentials (for writing decisions via /alerts endpoint)
     # These are alternative to lapi_key for write operations
     machine_id: str = ""
@@ -568,6 +573,8 @@ class Config:
             lapi_ca_cert_path=os.getenv("CROWDSEC_LAPI_CA_CERT_PATH", ""),
             lapi_cert_path=os.getenv("CROWDSEC_LAPI_CERT_PATH", ""),
             lapi_key_path=os.getenv("CROWDSEC_LAPI_KEY_PATH", ""),
+            lapi_bouncer_cert_path=os.getenv("CROWDSEC_LAPI_BOUNCER_CERT_PATH", ""),
+            lapi_bouncer_key_path=os.getenv("CROWDSEC_LAPI_BOUNCER_KEY_PATH", ""),
             machine_id=os.getenv("CROWDSEC_MACHINE_ID", ""),
             machine_password=os.getenv("CROWDSEC_MACHINE_PASSWORD", ""),
             machine_password_file=os.getenv("CROWDSEC_MACHINE_PASSWORD_FILE", ""),
@@ -1402,13 +1409,14 @@ def validate_lapi_tls_paths(
     ca_cert_path: str = "",
     cert_path: str = "",
     key_path: str = "",
+    prefix: str = "CROWDSEC_LAPI",
 ) -> list[str]:
     """Validate LAPI TLS certificate paths before handing them to requests."""
     errors: list[str] = []
     tls_values = {
-        "CROWDSEC_LAPI_CA_CERT_PATH": ca_cert_path,
-        "CROWDSEC_LAPI_CERT_PATH": cert_path,
-        "CROWDSEC_LAPI_KEY_PATH": key_path,
+        f"{prefix}_CA_CERT_PATH": ca_cert_path,
+        f"{prefix}_CERT_PATH": cert_path,
+        f"{prefix}_KEY_PATH": key_path,
     }
 
     if not any(tls_values.values()):
@@ -1432,7 +1440,7 @@ def validate_lapi_tls_paths(
         if not os.access(path, os.R_OK):
             errors.append(f"{env_name} is not readable: {path}")
             continue
-        if env_name == "CROWDSEC_LAPI_KEY_PATH":
+        if env_name.endswith("KEY_PATH"):
             mode = os.stat(path).st_mode & 0o777
             if mode & 0o077:
                 errors.append(
@@ -1638,6 +1646,8 @@ class CrowdSecLAPI:
         ca_cert_path: str = "",
         cert_path: str = "",
         key_path: str = "",
+        bouncer_cert_path: str = "",
+        bouncer_key_path: str = "",
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -1646,7 +1656,10 @@ class CrowdSecLAPI:
         self.ca_cert_path = ca_cert_path
         self.cert_path = cert_path
         self.key_path = key_path
+        self.bouncer_cert_path = bouncer_cert_path
+        self.bouncer_key_path = bouncer_key_path
         self.tls_enabled = bool(cert_path and key_path)
+        self.bouncer_tls_enabled = bool(bouncer_cert_path and bouncer_key_path)
         self.session = create_http_session(10)
         self.logger = logger
         self.jwt_token: Optional[str] = None
@@ -1656,19 +1669,28 @@ class CrowdSecLAPI:
             self.session.verify = ca_cert_path
         if self.tls_enabled:
             self.session.cert = (cert_path, key_path)
-            self.logger.debug("Configured LAPI client certificate authentication")
+            self.logger.debug("Configured LAPI agent certificate authentication")
             if not base_url.startswith("https://"):
                 self.logger.warning(
                     "LAPI URL does not use HTTPS; client certificate will not be "
                     "sent. Set CROWDSEC_LAPI_URL to an https:// address for mTLS."
                 )
+        # Bouncer session (for read-only GET /v1/decisions — uses bouncer OU cert)
+        if self.bouncer_tls_enabled:
+            self.bouncer_session = create_http_session(10)
+            if ca_cert_path:
+                self.bouncer_session.verify = ca_cert_path
+            self.bouncer_session.cert = (bouncer_cert_path, bouncer_key_path)
+            self.logger.debug("Configured LAPI bouncer certificate authentication")
+        else:
+            self.bouncer_session = self.session
         # Headers for bouncer API (read operations). TLS auth intentionally omits
         # X-Api-Key so CrowdSec can authenticate the client certificate.
         self.bouncer_headers = {
             "Content-Type": "application/json",
             "User-Agent": f"crowdsec-blocklist-import/{__version__}",
         }
-        if not self.tls_enabled:
+        if not self.tls_enabled and not self.bouncer_tls_enabled:
             self.bouncer_headers["X-Api-Key"] = api_key
             if self.machine_id and self.machine_password:
                 self.logger.debug("Authenticating to LAPI via machine credentials (JWT)")
@@ -1769,16 +1791,23 @@ class CrowdSecLAPI:
         existing: list[tuple[str, timedelta]] = []
 
         try:
-            # Prefer machine JWT auth — returns the full decision set
-            # (bouncer API returns a stream delta after the first pull,
-            #  causing subsequent runs to see 0 decisions and reimport everything)
-            if self.tls_enabled:
-                # mTLS session already configured with certs; no headers needed
+            if self.bouncer_tls_enabled:
+                # Bouncer mTLS session authenticates inline (no auth headers needed)
                 headers = None
+                session = self.bouncer_session
+            elif self.tls_enabled:
+                # Agent TLS — use bouncer cert if available, or JWT, or fallback
+                if self.bouncer_session is not self.session:
+                    headers = None
+                    session = self.bouncer_session
+                else:
+                    headers = self._get_machine_headers()
+                    session = self.session
             else:
-                headers = self._get_machine_headers() or self.bouncer_headers  
+                headers = self._get_machine_headers() or self.bouncer_headers
+                session = self.session
 
-            response = self.session.get(
+            response = session.get(
                 f"{self.base_url}/v1/decisions",
                 headers=headers,
                 timeout=120,
@@ -1798,8 +1827,7 @@ class CrowdSecLAPI:
                 self.logger.error("Forbidden: check your LAPI_API_KEY")
                 self.logger.error(f"Response: {response}")
             elif response.status_code == 403:
-                if self.tls_enabled:
-                    # mTLS auth failed - don't fall back, log error and return
+                if self.bouncer_tls_enabled or self.tls_enabled:
                     self.logger.error("mTLS authentication failed for decision query")
                     self.logger.error(f"Response: {response}")
                 else:
@@ -1906,13 +1934,14 @@ class CrowdSecLAPI:
         }
 
         # Get machine authentication headers (required for /alerts endpoint)
-        if self.tls_enabled:
-              headers = None
-        else:
-            headers = self._get_machine_headers()
-            if not headers:  # <-- MOVED HERE
-                self.logger.error(...)
-                return 0, len(ips)
+        headers = self._get_machine_headers()
+        if not headers:
+            self.logger.error(
+                "Cannot write decisions: no JWT token available. "
+                "Set CROWDSEC_LAPI_CERT_PATH + CROWDSEC_LAPI_KEY_PATH (agent cert) "
+                "or CROWDSEC_MACHINE_ID + CROWDSEC_MACHINE_PASSWORD."
+            )
+            return 0, len(ips)
 
         try:
             response = self.session.post(
@@ -2027,6 +2056,17 @@ def run_import(config: Config, logger: logging.Logger) -> ImportStats:
             logger.error(error)
         return stats
 
+    bouncer_tls_errors = validate_lapi_tls_paths(
+        config.lapi_ca_cert_path,
+        config.lapi_bouncer_cert_path,
+        config.lapi_bouncer_key_path,
+        prefix="CROWDSEC_LAPI_BOUNCER",
+    )
+    if bouncer_tls_errors:
+        for error in bouncer_tls_errors:
+            logger.error(error)
+        return stats
+
     # Initialize LAPI client
     lapi = CrowdSecLAPI(
         base_url=config.lapi_url,
@@ -2037,6 +2077,8 @@ def run_import(config: Config, logger: logging.Logger) -> ImportStats:
         ca_cert_path=config.lapi_ca_cert_path,
         cert_path=config.lapi_cert_path,
         key_path=config.lapi_key_path,
+        bouncer_cert_path=config.lapi_bouncer_cert_path,
+        bouncer_key_path=config.lapi_bouncer_key_path,
     )
 
     if config.abuseipdb_api_key_file:
