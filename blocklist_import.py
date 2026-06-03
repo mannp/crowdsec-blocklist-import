@@ -1657,7 +1657,11 @@ class CrowdSecLAPI:
         if self.tls_enabled:
             self.session.cert = (cert_path, key_path)
             self.logger.debug("Configured LAPI client certificate authentication")
-
+            if not base_url.startswith("https://"):
+                self.logger.warning(
+                    "LAPI URL does not use HTTPS; client certificate will not be "
+                    "sent. Set CROWDSEC_LAPI_URL to an https:// address for mTLS."
+                )
         # Headers for bouncer API (read operations). TLS auth intentionally omits
         # X-Api-Key so CrowdSec can authenticate the client certificate.
         self.bouncer_headers = {
