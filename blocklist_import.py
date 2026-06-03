@@ -1772,11 +1772,7 @@ class CrowdSecLAPI:
             # Prefer machine JWT auth — returns the full decision set
             # (bouncer API returns a stream delta after the first pull,
             #  causing subsequent runs to see 0 decisions and reimport everything)
-            if self.tls_enabled:
-                # mTLS session already configured with certs; no headers needed
-                headers = None
-            else:
-                headers = self._get_machine_headers() or self.bouncer_headers  
+            headers = self._get_machine_headers() or self.bouncer_headers
 
             response = self.session.get(
                 f"{self.base_url}/v1/decisions",
